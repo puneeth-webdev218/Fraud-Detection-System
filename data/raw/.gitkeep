@@ -1,0 +1,12 @@
+# Data Files
+
+Place the IEEE-CIS Fraud Detection dataset files here:
+- train_transaction.csv
+- train_identity.csv
+- test_transaction.csv
+- test_identity.csv
+
+## Download Instructions
+1. Visit: https://www.kaggle.com/c/ieee-fraud-detection/data
+2. Download the dataset
+3. Extract files to this directory
