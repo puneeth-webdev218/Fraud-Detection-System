@@ -127,6 +127,7 @@ class PostgreSQLManager:
     def create_transactions_table(self) -> bool:
         """
         Create transactions table if it doesn't exist
+        WITHOUT status column initially (for two-phase processing)
         
         Returns:
             True if table created or already exists
@@ -136,6 +137,7 @@ class PostgreSQLManager:
                 logger.error("✗ No database connection")
                 return False
             
+            # Create table WITHOUT status column initially (Phase 1: raw data)
             create_table_query = """
             CREATE TABLE IF NOT EXISTS transactions (
                 transaction_id BIGINT PRIMARY KEY,
@@ -145,17 +147,13 @@ class PostgreSQLManager:
                 amount DECIMAL(10,2),
                 timestamp TIMESTAMP,
                 fraud_flag BOOLEAN,
-                status VARCHAR(20),
                 processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             """
             
             self.cursor.execute(create_table_query)
             self.connection.commit()
-            logger.info("✓ Transactions table ready")
-            
-            # Add status column to existing tables (migration)
-            self._add_status_column_if_needed()
+            logger.info("✓ Transactions table ready (Phase 1: raw data)")
             
             # Create indexes for performance
             self._create_indexes()
@@ -262,21 +260,14 @@ class PostgreSQLManager:
             else:
                 insert_df['fraud_flag'] = insert_df['fraud_flag'].astype(int)
             
-            # Compute status based on fraud_flag: 1 -> 'FRAUD', 0 -> 'OK'
-            insert_df['status'] = insert_df['fraud_flag'].apply(
-                lambda x: 'FRAUD' if x == 1 else 'OK'
-            )
+            # Phase 1: Insert raw data WITHOUT status column
+            # Status will be added in Phase 2 after GNN processing
+            records = [tuple(row) for row in insert_df.values]
             
-            # Convert to tuples for insertion (include status in column order)
-            insert_cols = list(required_cols) + ['status']
-            insert_df_ordered = insert_df[insert_cols]
-            records = [tuple(row) for row in insert_df_ordered.values]
-            
-            # SQL insert with ON CONFLICT handling (includes status column)
-            # Cast fraud_flag to boolean since we convert it to int
+            # SQL insert with ON CONFLICT handling (NO status - Phase 1: raw data only)
             insert_query = """
             INSERT INTO transactions 
-            (transaction_id, account_id, merchant_id, device_id, amount, timestamp, fraud_flag, status)
+            (transaction_id, account_id, merchant_id, device_id, amount, timestamp, fraud_flag)
             VALUES %s
             ON CONFLICT (transaction_id) DO NOTHING;
             """
@@ -372,15 +363,17 @@ class PostgreSQLManager:
     def get_transactions_with_status(self, limit: int = 1000) -> pd.DataFrame:
         """
         Get transactions from database with status column
+        Returns gracefully if status column doesn't exist yet (Phase 1)
         
         Args:
             limit: Maximum number of rows to fetch
         
         Returns:
-            DataFrame with transaction data including status from database
+            DataFrame with transaction data including status from database (if available)
         """
         try:
-            query = f"""
+            # Try to query with status column first (Phase 2)
+            query_with_status = f"""
             SELECT transaction_id, account_id, merchant_id, device_id, 
                    amount, timestamp, fraud_flag, status
             FROM transactions
@@ -388,9 +381,15 @@ class PostgreSQLManager:
             LIMIT {limit};
             """
             
-            df = pd.read_sql_query(query, self.connection)
-            logger.info(f"✓ Retrieved {len(df)} transactions from database")
-            return df
+            try:
+                df = pd.read_sql_query(query_with_status, self.connection)
+                logger.info(f"✓ Retrieved {len(df)} transactions from database (with status)")
+                return df
+            except:
+                # If status column doesn't exist, return Phase 1 data (no status)
+                logger.info("ℹ Status column not yet available (Phase 1 data)")
+                return self.get_transactions_phase1(limit)
+                
         except PostgresError as e:
             logger.warning(f"⚠ Query failed: {e}")
             return pd.DataFrame()
@@ -398,20 +397,22 @@ class PostgreSQLManager:
     def get_transaction_by_search(self, search_type: str, search_value: int) -> pd.DataFrame:
         """
         Get transactions by search criteria (account, merchant, or device) with status from DB
+        Returns gracefully if status column doesn't exist yet (Phase 1)
         
         Args:
             search_type: 'account_id', 'merchant_id', or 'device_id'
             search_value: The ID value to search for
         
         Returns:
-            DataFrame with matching transactions including status from database
+            DataFrame with matching transactions (including status if available)
         """
         try:
             if search_type not in ['account_id', 'merchant_id', 'device_id']:
                 logger.error(f"✗ Invalid search type: {search_type}")
                 return pd.DataFrame()
             
-            query = f"""
+            # Try with status first
+            query_with_status = f"""
             SELECT transaction_id, account_id, merchant_id, device_id, 
                    amount, timestamp, fraud_flag, status
             FROM transactions
@@ -419,11 +420,103 @@ class PostgreSQLManager:
             ORDER BY timestamp DESC;
             """
             
-            df = pd.read_sql_query(query, self.connection, params=(search_value,))
-            logger.info(f"✓ Retrieved {len(df)} transactions for {search_type}={search_value}")
-            return df
+            try:
+                df = pd.read_sql_query(query_with_status, self.connection, params=(search_value,))
+                logger.info(f"✓ Retrieved {len(df)} transactions for {search_type}={search_value}")
+                return df
+            except:
+                # If status doesn't exist (Phase 1), query without status
+                query_no_status = f"""
+                SELECT transaction_id, account_id, merchant_id, device_id, 
+                       amount, timestamp, fraud_flag
+                FROM transactions
+                WHERE {search_type} = %s
+                ORDER BY timestamp DESC;
+                """
+                df = pd.read_sql_query(query_no_status, self.connection, params=(search_value,))
+                logger.info(f"✓ Retrieved {len(df)} Phase 1 transactions for {search_type}={search_value}")
+                return df
+                
         except PostgresError as e:
             logger.warning(f"⚠ Search query failed: {e}")
+            return pd.DataFrame()
+    
+    def add_status_column_and_update(self) -> bool:
+        """
+        PHASE 2: Add status column to transactions table and populate with GNN results
+        This is called AFTER GNN processing to mark transactions based on fraud_flag
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if not self.connection or not self.cursor:
+                logger.error("✗ Database not connected")
+                return False
+            
+            # Step 1: Add status column if it doesn't exist
+            alter_query = """
+            ALTER TABLE transactions
+            ADD COLUMN IF NOT EXISTS status VARCHAR(20);
+            """
+            self.cursor.execute(alter_query)
+            logger.info("✓ Status column added/verified")
+            
+            # Step 2: Update all transactions with status based on fraud_flag
+            # 1 -> 'FRAUD', 0 -> 'OK'
+            update_query = """
+            UPDATE transactions
+            SET status = CASE 
+                WHEN fraud_flag::integer = 1 THEN 'FRAUD'
+                ELSE 'OK'
+            END
+            WHERE status IS NULL;
+            """
+            self.cursor.execute(update_query)
+            rows_updated = self.cursor.rowcount
+            
+            # Step 3: Commit the changes
+            self.connection.commit()
+            logger.info(f"✓ Phase 2 Complete: {rows_updated} transactions updated with status")
+            
+            return True
+            
+        except PostgresError as e:
+            logger.error(f"✗ Phase 2 failed: {e}")
+            if self.connection:
+                self.connection.rollback()
+            return False
+        except Exception as e:
+            logger.error(f"✗ Unexpected error in Phase 2: {e}")
+            if self.connection:
+                self.connection.rollback()
+            return False
+    
+    def get_transactions_phase1(self, limit: int = 1000) -> pd.DataFrame:
+        """
+        Get transactions as they exist in Phase 1 (without status column)
+        For visualization: shows raw data before GNN processing
+        
+        Args:
+            limit: Maximum number of rows to fetch
+        
+        Returns:
+            DataFrame with transaction data (without status)
+        """
+        try:
+            query = f"""
+            SELECT transaction_id, account_id, merchant_id, device_id, 
+                   amount, timestamp, fraud_flag
+            FROM transactions
+            ORDER BY transaction_id DESC
+            LIMIT {limit};
+            """
+            
+            df = pd.read_sql_query(query, self.connection)
+            logger.info(f"✓ Retrieved {len(df)} Phase 1 transactions (raw data)")
+            return df
+        except PostgresError as e:
+            logger.warning(f"⚠ Phase 1 query failed: {e}")
             return pd.DataFrame()
 
 

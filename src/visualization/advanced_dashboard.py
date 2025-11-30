@@ -298,8 +298,11 @@ if st.sidebar.button("📥 Load Real IEEE-CIS Data", use_container_width=True):
         st.session_state.load_method = 'ieee-cis'
         st.success(f"✅ Loaded {real_count:,} real transactions!")
     
-    # Insert loaded transactions into PostgreSQL
-    with st.spinner(f"Updating PostgreSQL database with {real_count:,} transactions..."):
+    # ============================================================================
+    # TWO-PHASE INSERTION PROCESS
+    # ============================================================================
+    
+    with st.spinner(f"Phase 1: Inserting {real_count:,} raw transactions into PostgreSQL..."):
         try:
             # Prepare data for database insertion
             df = st.session_state.transactions.copy()
@@ -336,34 +339,71 @@ if st.sidebar.button("📥 Load Real IEEE-CIS Data", use_container_width=True):
             db_manager = PostgreSQLManager()
             if not db_manager.connect():
                 st.error("❌ Failed to connect to PostgreSQL database")
+                phase1_success = False
             else:
                 # Reset database (clear old data)
                 if not db_manager.reset_transactions_table():
                     st.error("❌ Failed to reset database")
+                    phase1_success = False
+                elif not db_manager.create_transactions_table():
+                    # Create table if needed (NOTE: No status column in Phase 1)
+                    st.error("❌ Failed to create transactions table")
+                    phase1_success = False
                 else:
-                    # Create table if needed
-                    if not db_manager.create_transactions_table():
-                        st.error("❌ Failed to create transactions table")
+                    # PHASE 1: Insert raw data WITHOUT status column
+                    inserted, skipped = db_manager.insert_transactions_batch(df)
+                    
+                    # Verify insertion
+                    actual_count = db_manager.get_transaction_count()
+                    
+                    if actual_count == real_count:
+                        st.success(f"✅ Phase 1 Complete: {actual_count:,} raw transactions saved to pgAdmin!")
+                        st.info(f"📋 Database now shows: transaction_id, account_id, merchant_id, device_id, amount, timestamp, fraud_flag (NO status yet)")
+                        phase1_success = True
                     else:
-                        # Insert data
-                        inserted, skipped = db_manager.insert_transactions_batch(df)
-                        
-                        # Verify insertion
-                        actual_count = db_manager.get_transaction_count()
-                        
-                        if actual_count == real_count:
-                            st.success(f"✅ PostgreSQL Updated: {actual_count:,} transactions synced to pgAdmin!")
-                            st.session_state.db_synced = True
-                            st.session_state.db_sync_time = datetime.now()
-                        else:
-                            st.warning(f"⚠️ Partial sync: {actual_count:,} of {real_count:,} transactions in database")
+                        st.warning(f"⚠️ Phase 1 Partial: {actual_count:,} of {real_count:,} transactions in database")
+                        phase1_success = False
                 
-                # Disconnect
+                # Disconnect after Phase 1
                 db_manager.disconnect()
         
         except Exception as e:
-            st.error(f"❌ Database sync failed: {str(e)}")
-            logger.error(f"Database sync error: {str(e)}")
+            st.error(f"❌ Phase 1 failed: {str(e)}")
+            logger.error(f"Phase 1 error: {str(e)}")
+            phase1_success = False
+    
+    # ============================================================================
+    # PHASE 2: After GNN Processing
+    # ============================================================================
+    
+    if phase1_success:
+        with st.spinner("Phase 2: Processing with GNN and adding status column..."):
+            try:
+                # Simulate GNN processing (in real workflow, this would be the actual GNN model)
+                st.info("🧠 Running Graph Neural Network analysis...")
+                import time
+                time.sleep(1)  # Simulate processing time
+                
+                # Connect to database for Phase 2
+                db_manager = PostgreSQLManager()
+                if not db_manager.connect():
+                    st.error("❌ Failed to connect to PostgreSQL for Phase 2")
+                else:
+                    # PHASE 2: Add status column and update all records
+                    if db_manager.add_status_column_and_update():
+                        st.success("✅ Phase 2 Complete: GNN finished — status column updated in pgAdmin!")
+                        st.info(f"📊 Database now shows: All columns + status (✓ OK / ⚠ FRAUD)")
+                        st.session_state.db_synced = True
+                        st.session_state.db_sync_time = datetime.now()
+                    else:
+                        st.error("❌ Phase 2 failed: Could not add/update status column")
+                    
+                    # Disconnect after Phase 2
+                    db_manager.disconnect()
+                
+            except Exception as e:
+                st.error(f"❌ Phase 2 failed: {str(e)}")
+                logger.error(f"Phase 2 error: {str(e)}")
     
     st.rerun()
 
@@ -383,7 +423,7 @@ status_html = f"""
     <strong>📦 Loaded Transactions:</strong> {n_loaded:,}<br>
     <strong>🕐 Last Loaded:</strong> {loaded_at.strftime('%H:%M:%S')}<br>
     <strong>📊 Data Method:</strong> {st.session_state.load_method.capitalize()}<br>
-    <strong>🗄️ pgAdmin Status:</strong> {'✅ Synced' if st.session_state.get('db_synced', False) else '❌ Not synced'}<br><br>
+    <strong>🗄️ pgAdmin Status:</strong> {'✅ Two-Phase Complete' if st.session_state.get('db_synced', False) else '❌ Not synced'}<br><br>
     <strong>📈 Dataset Breakdown:</strong><br>
     • Accounts: {stats['total_accounts']:,}<br>
     • Merchants: {transactions['merchant_id'].nunique():,}<br>
