@@ -11,22 +11,127 @@ A comprehensive fraud detection system that combines database-driven transaction
 - **Multi-Page Analytics**: 7 specialized analysis dashboards
 - **Automatic Fallback**: Seamless transition to synthetic data if real data unavailable
 - **Two-Phase Pipeline**: Live ML → Database integration demo (NEW) ⭐
+- **Dual-Table Architecture**: Separate tables for raw data and predictions (NEW) ⭐⭐
 
-## 🎯 Two-Phase Pipeline (NEW!)
+---
 
-The system now features a **Two-Phase Pipeline** demonstrating ML → Database integration:
+## 🎯 Two-Table Workflow (LATEST - Most Important Feature!)
+
+**The system now uses TWO separate database tables to demonstrate a clear ML pipeline:**
+
+### Phase 1: Load Transactions (Raw Data)
+```
+Button: "📤 Load Transactions (Phase 1)"
+↓
+Action: Insert raw transactions to 'transactions' table
+↓
+Schema: 7 columns (NO status)
+┌─────────────────────────────────┐
+│ transactions Table (RAW)        │
+├─────────────────────────────────┤
+│ • transaction_id (BIGINT PK)   │
+│ • account_id (INTEGER)         │
+│ • merchant_id (INTEGER)        │
+│ • device_id (INTEGER)          │
+│ • amount (DECIMAL)             │
+│ • timestamp (TIMESTAMP)        │
+│ • fraud_flag (BOOLEAN)         │
+│ → NO status column yet         │
+└─────────────────────────────────┘
+Console: "✅ PHASE 1 COMPLETE — X raw transactions stored"
+```
+
+### Phase 2: Do Predictions (ML Processing)
+```
+Button: "🧠 Do Predictions (Phase 2)"
+↓
+Action: Run GNN analysis & insert to 'fraud_predictions' table
+↓
+Schema: 8 columns (WITH status)
+┌─────────────────────────────────┐
+│ fraud_predictions Table (GNN)   │
+├─────────────────────────────────┤
+│ • transaction_id (BIGINT PK)   │
+│ • account_id (INTEGER)         │
+│ • merchant_id (INTEGER)        │
+│ • device_id (INTEGER)          │
+│ • amount (DECIMAL)             │
+│ • timestamp (TIMESTAMP)        │
+│ • fraud_flag (BOOLEAN)         │
+│ • status (VARCHAR) ← NEW! ✓    │
+│   (FRAUD or OK)               │
+└─────────────────────────────────┘
+Console: "✅ PHASE 2 COMPLETE — X predictions saved"
+```
+
+### Why Two Tables?
+
+| Aspect | Single Table (Old) | Dual Table (New) |
+|--------|-------------------|-----------------|
+| **Clarity** | ❌ Status appears suddenly | ✅ Phase 1 shows raw, Phase 2 shows enriched |
+| **Workflow** | ❌ Unclear what's happening | ✅ Crystal clear ML pipeline |
+| **Education** | ❌ Hard to understand | ✅ Perfect for learning |
+| **pgAdmin** | ❌ One table, confusing | ✅ Two separate tables, easy to understand |
+| **Data Auditing** | ❌ Original data lost | ✅ Both versions available |
+
+**In pgAdmin, you'll see:**
+```
+Databases → postgres → Schemas → public → Tables
+├── transactions       (7 columns, raw data, NO status)
+└── fraud_predictions  (8 columns, with status = FRAUD/OK)
+```
+
+### Getting Started with Two-Table Workflow
+
+1. **Start Dashboard:**
+   ```bash
+   streamlit run src/visualization/advanced_dashboard.py
+   ```
+
+2. **Load Demo Data:**
+   - Sidebar → "Generate Demo Data" → Enter 1000 → Click button
+
+3. **Phase 1 - Load Raw Transactions:**
+   - Click "📤 Load Transactions (Phase 1)"
+   - ✅ Check console: `"PHASE 1 COMPLETE — 1000 raw transactions stored"`
+   - ✅ Check pgAdmin: `transactions` table (7 columns)
+
+4. **Phase 2 - Run GNN Predictions:**
+   - Click "🧠 Do Predictions (Phase 2)"
+   - ✅ Check console: `"PHASE 2 COMPLETE — 1000 predictions saved"`
+   - ✅ Check pgAdmin: `fraud_predictions` table (8 columns with status)
+
+5. **Verify Both Tables in pgAdmin:**
+   ```sql
+   -- See Phase 1 data (raw)
+   SELECT * FROM transactions LIMIT 5;
+   
+   -- See Phase 2 data (predictions)
+   SELECT * FROM fraud_predictions LIMIT 5;
+   
+   -- Compare fraud counts
+   SELECT 
+     (SELECT COUNT(*) FROM fraud_predictions WHERE status='FRAUD') as predicted_fraud,
+     (SELECT COUNT(*) FROM fraud_predictions WHERE status='OK') as predicted_ok;
+   ```
+
+**📖 Full Documentation:**
+- **Quick Start**: [QUICKSTART_TWODATA.md](QUICKSTART_TWODATA.md)
+- **Architecture**: [ARCHITECTURE_DIAGRAM.md](ARCHITECTURE_DIAGRAM.md)
+- **Detailed Summary**: [REFACTORING_SUMMARY.md](REFACTORING_SUMMARY.md)
+- **Completion Report**: [TWO_TABLE_COMPLETION.md](TWO_TABLE_COMPLETION.md)
+
+---
+
+## 🎯 Original Two-Phase Pipeline (Previous Implementation)
+
+The system still features a **Two-Phase Pipeline** demonstrating ML → Database integration:
 
 ```
 Phase 1: Raw Data → PostgreSQL (immediate insertion)
          ↓
 Phase 2: GNN Processing → Status Update (enrichment after processing)
 ```
-
-**Why Two Phases?**
-- Shows raw data first in pgAdmin (no processing)
-- Then runs GNN (implicit processing step)
-- Then adds status column (enrichment visible)
-- Perfect for demonstrating data → ML → database flow
 
 **See it in action:**
 ```bash
@@ -36,7 +141,7 @@ Click "Load Real IEEE-CIS Data" → Watch Phase 1 and Phase 2 execute in real-ti
 
 📖 **Documentation**: See [TWO_PHASE_PIPELINE.md](TWO_PHASE_PIPELINE.md) and [TWO_PHASE_VISUAL_GUIDE.md](TWO_PHASE_VISUAL_GUIDE.md)
 
-## 📊 Dataset
+---
 **IEEE-CIS Fraud Detection Dataset**
 - 590,540 anonymized transactions
 - 144,233 identity records
