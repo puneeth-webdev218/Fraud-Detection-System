@@ -10,6 +10,31 @@ A comprehensive fraud detection system that combines database-driven transaction
 - **Graph Neural Networks**: Advanced GNN models (GraphSAGE/GAT/R-GCN)
 - **Multi-Page Analytics**: 7 specialized analysis dashboards
 - **Automatic Fallback**: Seamless transition to synthetic data if real data unavailable
+- **Two-Phase Pipeline**: Live ML → Database integration demo (NEW) ⭐
+
+## 🎯 Two-Phase Pipeline (NEW!)
+
+The system now features a **Two-Phase Pipeline** demonstrating ML → Database integration:
+
+```
+Phase 1: Raw Data → PostgreSQL (immediate insertion)
+         ↓
+Phase 2: GNN Processing → Status Update (enrichment after processing)
+```
+
+**Why Two Phases?**
+- Shows raw data first in pgAdmin (no processing)
+- Then runs GNN (implicit processing step)
+- Then adds status column (enrichment visible)
+- Perfect for demonstrating data → ML → database flow
+
+**See it in action:**
+```bash
+streamlit run src/visualization/advanced_dashboard.py
+```
+Click "Load Real IEEE-CIS Data" → Watch Phase 1 and Phase 2 execute in real-time!
+
+📖 **Documentation**: See [TWO_PHASE_PIPELINE.md](TWO_PHASE_PIPELINE.md) and [TWO_PHASE_VISUAL_GUIDE.md](TWO_PHASE_VISUAL_GUIDE.md)
 
 ## 📊 Dataset
 **IEEE-CIS Fraud Detection Dataset**
@@ -129,6 +154,9 @@ In the sidebar:
 - [DYNAMIC_LOADING_FEATURE.md](DYNAMIC_LOADING_FEATURE.md) - Feature details
 - [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md) - Integration examples
 - [QUICK_START_DYNAMIC_LOADING.md](QUICK_START_DYNAMIC_LOADING.md) - Quick reference
+- [TWO_PHASE_PIPELINE.md](TWO_PHASE_PIPELINE.md) - Two-phase pipeline guide (NEW) ⭐
+- [TWO_PHASE_VISUAL_GUIDE.md](TWO_PHASE_VISUAL_GUIDE.md) - Visual diagrams (NEW) ⭐
+- [TWO_PHASE_IMPLEMENTATION_SUMMARY.md](TWO_PHASE_IMPLEMENTATION_SUMMARY.md) - Implementation details (NEW) ⭐
 
 ## 🚀 Usage Examples
 
