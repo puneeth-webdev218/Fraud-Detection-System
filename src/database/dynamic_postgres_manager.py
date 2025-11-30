@@ -145,6 +145,7 @@ class PostgreSQLManager:
                 amount DECIMAL(10,2),
                 timestamp TIMESTAMP,
                 fraud_flag BOOLEAN,
+                status VARCHAR(20),
                 processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             """
@@ -152,6 +153,9 @@ class PostgreSQLManager:
             self.cursor.execute(create_table_query)
             self.connection.commit()
             logger.info("✓ Transactions table ready")
+            
+            # Add status column to existing tables (migration)
+            self._add_status_column_if_needed()
             
             # Create indexes for performance
             self._create_indexes()
@@ -164,6 +168,25 @@ class PostgreSQLManager:
                 self.connection.rollback()
             return False
     
+    def _add_status_column_if_needed(self) -> None:
+        """Add status column to existing transactions table if it doesn't exist"""
+        try:
+            # Check if status column exists
+            self.cursor.execute(
+                """SELECT column_name FROM information_schema.columns 
+                   WHERE table_name = 'transactions' AND column_name = 'status';"""
+            )
+            if not self.cursor.fetchone():
+                # Column doesn't exist, add it
+                self.cursor.execute(
+                    "ALTER TABLE transactions ADD COLUMN status VARCHAR(20);"
+                )
+                self.connection.commit()
+                logger.info("✓ Added status column to transactions table")
+        except PostgresError as e:
+            # Column may already exist or table doesn't exist yet
+            logger.debug(f"Status column migration info: {e}")
+    
     def _create_indexes(self) -> None:
         """Create performance indexes on transactions table"""
         try:
@@ -171,7 +194,8 @@ class PostgreSQLManager:
                 ("idx_transactions_fraud", "fraud_flag"),
                 ("idx_transactions_account", "account_id"),
                 ("idx_transactions_timestamp", "timestamp"),
-                ("idx_transactions_amount", "amount")
+                ("idx_transactions_amount", "amount"),
+                ("idx_transactions_status", "status")
             ]
             
             for idx_name, column in indexes:
@@ -238,13 +262,21 @@ class PostgreSQLManager:
             else:
                 insert_df['fraud_flag'] = insert_df['fraud_flag'].astype(int)
             
-            # Convert to tuples for insertion
-            records = [tuple(row) for row in insert_df.values]
+            # Compute status based on fraud_flag: 1 -> 'FRAUD', 0 -> 'OK'
+            insert_df['status'] = insert_df['fraud_flag'].apply(
+                lambda x: 'FRAUD' if x == 1 else 'OK'
+            )
             
-            # SQL insert with ON CONFLICT handling
+            # Convert to tuples for insertion (include status in column order)
+            insert_cols = list(required_cols) + ['status']
+            insert_df_ordered = insert_df[insert_cols]
+            records = [tuple(row) for row in insert_df_ordered.values]
+            
+            # SQL insert with ON CONFLICT handling (includes status column)
+            # Cast fraud_flag to boolean since we convert it to int
             insert_query = """
             INSERT INTO transactions 
-            (transaction_id, account_id, merchant_id, device_id, amount, timestamp, fraud_flag)
+            (transaction_id, account_id, merchant_id, device_id, amount, timestamp, fraud_flag, status)
             VALUES %s
             ON CONFLICT (transaction_id) DO NOTHING;
             """
@@ -253,12 +285,17 @@ class PostgreSQLManager:
             batch_size = 1000
             total_inserted = 0
             
-            # Execute all batches without individual commits
+            # Convert integer fraud_flag to boolean and execute batches without individual commits
             for i in range(0, len(records), batch_size):
                 batch = records[i:i+batch_size]
+                # Convert fraud_flag (position 6) from int to boolean
+                batch_with_bool = [
+                    (row[0], row[1], row[2], row[3], row[4], row[5], bool(row[6]), row[7])
+                    for row in batch
+                ]
                 try:
-                    execute_values(self.cursor, insert_query, batch)
-                    total_inserted += len(batch)
+                    execute_values(self.cursor, insert_query, batch_with_bool)
+                    total_inserted += len(batch_with_bool)
                 except PostgresError as e:
                     self.connection.rollback()
                     logger.error(f"✗ Batch insert failed: {e}")
@@ -331,6 +368,63 @@ class PostgreSQLManager:
                 'total': 0, 'fraud_count': 0, 'fraud_rate': 0.0,
                 'avg_amount': 0.0, 'min_amount': 0.0, 'max_amount': 0.0
             }
+    
+    def get_transactions_with_status(self, limit: int = 1000) -> pd.DataFrame:
+        """
+        Get transactions from database with status column
+        
+        Args:
+            limit: Maximum number of rows to fetch
+        
+        Returns:
+            DataFrame with transaction data including status from database
+        """
+        try:
+            query = f"""
+            SELECT transaction_id, account_id, merchant_id, device_id, 
+                   amount, timestamp, fraud_flag, status
+            FROM transactions
+            ORDER BY transaction_id DESC
+            LIMIT {limit};
+            """
+            
+            df = pd.read_sql_query(query, self.connection)
+            logger.info(f"✓ Retrieved {len(df)} transactions from database")
+            return df
+        except PostgresError as e:
+            logger.warning(f"⚠ Query failed: {e}")
+            return pd.DataFrame()
+    
+    def get_transaction_by_search(self, search_type: str, search_value: int) -> pd.DataFrame:
+        """
+        Get transactions by search criteria (account, merchant, or device) with status from DB
+        
+        Args:
+            search_type: 'account_id', 'merchant_id', or 'device_id'
+            search_value: The ID value to search for
+        
+        Returns:
+            DataFrame with matching transactions including status from database
+        """
+        try:
+            if search_type not in ['account_id', 'merchant_id', 'device_id']:
+                logger.error(f"✗ Invalid search type: {search_type}")
+                return pd.DataFrame()
+            
+            query = f"""
+            SELECT transaction_id, account_id, merchant_id, device_id, 
+                   amount, timestamp, fraud_flag, status
+            FROM transactions
+            WHERE {search_type} = %s
+            ORDER BY timestamp DESC;
+            """
+            
+            df = pd.read_sql_query(query, self.connection, params=(search_value,))
+            logger.info(f"✓ Retrieved {len(df)} transactions for {search_type}={search_value}")
+            return df
+        except PostgresError as e:
+            logger.warning(f"⚠ Search query failed: {e}")
+            return pd.DataFrame()
 
 
 # Convenience functions

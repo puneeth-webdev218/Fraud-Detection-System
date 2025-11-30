@@ -721,9 +721,16 @@ elif page == "🔎 Transaction Search":
         
         if len(results) > 0:
             results_display = results.copy()
-            results_display['Status'] = results_display['is_fraud'].apply(
-                lambda x: '⚠️ FRAUD' if x else '✓ OK'
-            )
+            # Use status from database if available, otherwise compute from fraud_flag
+            if 'status' not in results_display.columns:
+                results_display['Status'] = results_display['is_fraud'].apply(
+                    lambda x: '⚠️ FRAUD' if x else '✓ OK'
+                )
+            else:
+                # Status comes from database - format with emoji
+                results_display['Status'] = results_display['status'].apply(
+                    lambda x: '⚠️ FRAUD' if x == 'FRAUD' else '✓ OK'
+                )
             st.dataframe(
                 results_display[['transaction_id', 'account_id', 'merchant_id', 
                                'device_id', 'transaction_amount', 'Status']],
