@@ -126,8 +126,7 @@ class PostgreSQLManager:
     
     def create_transactions_table(self) -> bool:
         """
-        Create transactions table if it doesn't exist
-        WITHOUT status column initially (for two-phase processing)
+        PHASE 1: Create transactions table for RAW data (no status column)
         
         Returns:
             True if table created or already exists
@@ -137,7 +136,7 @@ class PostgreSQLManager:
                 logger.error("✗ No database connection")
                 return False
             
-            # Create table WITHOUT status column initially (Phase 1: raw data)
+            # Phase 1: Create table with 7 columns only (no status, no predictions)
             create_table_query = """
             CREATE TABLE IF NOT EXISTS transactions (
                 transaction_id BIGINT PRIMARY KEY,
@@ -153,10 +152,11 @@ class PostgreSQLManager:
             
             self.cursor.execute(create_table_query)
             self.connection.commit()
-            logger.info("✓ Transactions table ready (Phase 1: raw data)")
+            logger.info("✓ Phase 1 - Transactions table ready (raw data, no status)")
+            logger.info("  Columns: transaction_id, account_id, merchant_id, device_id, amount, timestamp, fraud_flag")
             
             # Create indexes for performance
-            self._create_indexes()
+            self._create_indexes_transactions()
             
             return True
         
@@ -166,24 +166,95 @@ class PostgreSQLManager:
                 self.connection.rollback()
             return False
     
-    def _add_status_column_if_needed(self) -> None:
-        """Add status column to existing transactions table if it doesn't exist"""
+    def create_fraud_predictions_table(self) -> bool:
+        """
+        PHASE 2: Create fraud_predictions table for processed data WITH status column
+        This table will contain the same rows as transactions, but with GNN predictions
+        
+        Returns:
+            True if table created or already exists
+        """
         try:
-            # Check if status column exists
-            self.cursor.execute(
-                """SELECT column_name FROM information_schema.columns 
-                   WHERE table_name = 'transactions' AND column_name = 'status';"""
-            )
-            if not self.cursor.fetchone():
-                # Column doesn't exist, add it
-                self.cursor.execute(
-                    "ALTER TABLE transactions ADD COLUMN status VARCHAR(20);"
-                )
-                self.connection.commit()
-                logger.info("✓ Added status column to transactions table")
+            if not self.connection:
+                logger.error("✗ No database connection")
+                return False
+            
+            # Phase 2: Create table with 8 columns (includes status from GNN)
+            create_table_query = """
+            CREATE TABLE IF NOT EXISTS fraud_predictions (
+                transaction_id BIGINT PRIMARY KEY,
+                account_id INTEGER,
+                merchant_id INTEGER,
+                device_id INTEGER,
+                amount DECIMAL(10,2),
+                timestamp TIMESTAMP,
+                fraud_flag BOOLEAN,
+                status VARCHAR(20),
+                processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+            
+            self.cursor.execute(create_table_query)
+            self.connection.commit()
+            logger.info("✓ Phase 2 - Fraud_predictions table ready (with status)")
+            logger.info("  Columns: transaction_id, account_id, merchant_id, device_id, amount, timestamp, fraud_flag, status")
+            
+            # Create indexes for performance
+            self._create_indexes_predictions()
+            
+            return True
+        
         except PostgresError as e:
-            # Column may already exist or table doesn't exist yet
-            logger.debug(f"Status column migration info: {e}")
+            logger.error(f"✗ Fraud_predictions table creation failed: {e}")
+            if self.connection:
+                self.connection.rollback()
+            return False
+    
+    def _create_indexes_transactions(self) -> None:
+        """Create performance indexes on transactions table (Phase 1)"""
+        try:
+            indexes = [
+                ("idx_trans_fraud", "fraud_flag"),
+                ("idx_trans_account", "account_id"),
+                ("idx_trans_timestamp", "timestamp"),
+                ("idx_trans_amount", "amount"),
+            ]
+            
+            for idx_name, column in indexes:
+                try:
+                    self.cursor.execute(f"""
+                        CREATE INDEX IF NOT EXISTS {idx_name}
+                        ON transactions ({column});
+                    """)
+                except:
+                    pass  # Index may already exist
+            
+            self.connection.commit()
+        except Exception as e:
+            logger.debug(f"Index creation skipped: {e}")
+    
+    def _create_indexes_predictions(self) -> None:
+        """Create performance indexes on fraud_predictions table (Phase 2)"""
+        try:
+            indexes = [
+                ("idx_pred_fraud", "fraud_flag"),
+                ("idx_pred_account", "account_id"),
+                ("idx_pred_status", "status"),
+                ("idx_pred_timestamp", "timestamp"),
+            ]
+            
+            for idx_name, column in indexes:
+                try:
+                    self.cursor.execute(f"""
+                        CREATE INDEX IF NOT EXISTS {idx_name}
+                        ON fraud_predictions ({column});
+                    """)
+                except:
+                    pass  # Index may already exist
+            
+            self.connection.commit()
+        except Exception as e:
+            logger.debug(f"Index creation skipped: {e}")
     
     def _create_indexes(self) -> None:
         """Create performance indexes on transactions table"""
@@ -294,15 +365,115 @@ class PostgreSQLManager:
             
             # Single final commit after ALL inserts complete
             self.connection.commit()
-            logger.info(f"✓ All {total_inserted} transactions committed to database")
+            logger.info(f"✓ Phase 1 Complete: {total_inserted} raw transactions committed to database")
+            logger.info("  Transactions table now contains raw data (NO status column)")
             
             skipped = len(records) - total_inserted
-            logger.info(f"✓ Insertion complete: {total_inserted} inserted, {skipped} skipped")
+            logger.info(f"  Inserted: {total_inserted}, Skipped (duplicates): {skipped}")
             
             return total_inserted, skipped
         
         except Exception as e:
             logger.error(f"✗ Batch insertion failed: {e}")
+            if self.connection:
+                self.connection.rollback()
+            return 0, len(df) if df is not None else 0
+    
+    def insert_fraud_predictions_batch(
+        self,
+        df: pd.DataFrame,
+        column_mapping: Dict[str, str] = None
+    ) -> Tuple[int, int]:
+        """
+        PHASE 2: Insert predictions into fraud_predictions table with status column
+        This is called AFTER GNN processing to save results
+        
+        Args:
+            df: DataFrame with prediction data (includes status from GNN output)
+            column_mapping: Optional mapping of DataFrame columns to table columns
+        
+        Returns:
+            Tuple of (inserted_count, skipped_count)
+        """
+        try:
+            if not self.connection or df is None or df.empty:
+                logger.error("✗ Invalid connection or empty DataFrame")
+                return 0, 0
+            
+            # Apply column mapping if provided
+            if column_mapping:
+                df = df.rename(columns=column_mapping)
+            
+            # Required columns (includes status from GNN)
+            required_cols = [
+                'transaction_id', 'account_id', 'merchant_id', 'device_id',
+                'amount', 'timestamp', 'fraud_flag', 'status'
+            ]
+            
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                logger.error(f"✗ Missing columns for predictions: {missing_cols}")
+                return 0, 0
+            
+            # Select and prepare data
+            pred_df = df[required_cols].copy()
+            
+            # Convert fraud_flag to integer if needed
+            if pred_df['fraud_flag'].dtype == 'bool':
+                pred_df['fraud_flag'] = pred_df['fraud_flag'].astype(int)
+            elif pred_df['fraud_flag'].dtype == 'object':
+                pred_df['fraud_flag'] = pred_df['fraud_flag'].map({
+                    'True': 1, 'False': 0, True: 1, False: 0,
+                    'true': 1, 'false': 0, 1: 1, 0: 0
+                }).astype(int)
+            else:
+                pred_df['fraud_flag'] = pred_df['fraud_flag'].astype(int)
+            
+            # Ensure status column has correct format
+            pred_df['status'] = pred_df['status'].astype(str).str.upper()
+            
+            # Convert to tuples
+            records = [tuple(row) for row in pred_df.values]
+            
+            # SQL insert with ON CONFLICT (fraud_predictions table)
+            insert_query = """
+            INSERT INTO fraud_predictions 
+            (transaction_id, account_id, merchant_id, device_id, amount, timestamp, fraud_flag, status)
+            VALUES %s
+            ON CONFLICT (transaction_id) DO NOTHING;
+            """
+            
+            # Batch insert in chunks of 1000
+            batch_size = 1000
+            total_inserted = 0
+            
+            for i in range(0, len(records), batch_size):
+                batch = records[i:i+batch_size]
+                # Convert fraud_flag to boolean
+                batch_with_bool = [
+                    (row[0], row[1], row[2], row[3], row[4], row[5], bool(row[6]), row[7])
+                    for row in batch
+                ]
+                try:
+                    execute_values(self.cursor, insert_query, batch_with_bool)
+                    total_inserted += len(batch_with_bool)
+                except PostgresError as e:
+                    self.connection.rollback()
+                    logger.error(f"✗ Batch prediction insert failed: {e}")
+                    return 0, len(records)
+            
+            # Commit after all inserts
+            self.connection.commit()
+            logger.info(f"✓ Phase 2 Complete: {total_inserted} predictions saved to fraud_predictions table")
+            logger.info("  Fraud_predictions table now contains processed data with status column")
+            
+            skipped = len(records) - total_inserted
+            logger.info(f"  Inserted: {total_inserted}, Skipped (duplicates): {skipped}")
+            
+            return total_inserted, skipped
+        
+        except Exception as e:
+            logger.error(f"✗ Prediction insertion failed: {e}")
             if self.connection:
                 self.connection.rollback()
             return 0, len(df) if df is not None else 0
@@ -322,28 +493,52 @@ class PostgreSQLManager:
             logger.warning(f"⚠ Count query failed: {e}")
             return 0
     
+    def get_fraud_prediction_count(self) -> int:
+        """
+        Get total number of fraud predictions in database (Phase 2)
+        
+        Returns:
+            Count of fraud predictions
+        """
+        try:
+            self.cursor.execute("SELECT COUNT(*) FROM fraud_predictions;")
+            count = self.cursor.fetchone()[0]
+            return count
+        except PostgresError as e:
+            logger.warning(f"⚠ Fraud prediction count query failed: {e}")
+            return 0
+    
     def get_fraud_stats(self) -> Dict:
         """
-        Get fraud statistics from transactions table
+        Get fraud statistics from fraud_predictions table (Phase 2 results)
+        If fraud_predictions is empty, returns empty stats
         
         Returns:
             Dictionary with fraud statistics
         """
         try:
+            # Try to query from fraud_predictions (Phase 2 data with status)
             query = """
             SELECT
                 COUNT(*) as total,
-                SUM(CASE WHEN fraud_flag::integer = 1 THEN 1 ELSE 0 END) as fraud_count,
-                ROUND(SUM(CASE WHEN fraud_flag::integer = 1 THEN 1 ELSE 0 END)::numeric / 
+                SUM(CASE WHEN status = 'FRAUD' THEN 1 ELSE 0 END) as fraud_count,
+                ROUND(SUM(CASE WHEN status = 'FRAUD' THEN 1 ELSE 0 END)::numeric / 
                       COUNT(*) * 100, 2) as fraud_rate,
                 AVG(amount) as avg_amount,
                 MIN(amount) as min_amount,
                 MAX(amount) as max_amount
-            FROM transactions;
+            FROM fraud_predictions;
             """
             
             self.cursor.execute(query)
             result = self.cursor.fetchone()
+            
+            if result[0] == 0:
+                # fraud_predictions is empty, return empty stats
+                return {
+                    'total': 0, 'fraud_count': 0, 'fraud_rate': 0.0,
+                    'avg_amount': 0.0, 'min_amount': 0.0, 'max_amount': 0.0
+                }
             
             return {
                 'total': result[0] or 0,
@@ -362,33 +557,33 @@ class PostgreSQLManager:
     
     def get_transactions_with_status(self, limit: int = 1000) -> pd.DataFrame:
         """
-        Get transactions from database with status column
-        Returns gracefully if status column doesn't exist yet (Phase 1)
+        Get transactions from fraud_predictions table (Phase 2 results with status)
+        Returns empty DataFrame if fraud_predictions table is empty (Phase 1 only)
         
         Args:
             limit: Maximum number of rows to fetch
         
         Returns:
-            DataFrame with transaction data including status from database (if available)
+            DataFrame with transaction data from fraud_predictions (includes status)
         """
         try:
-            # Try to query with status column first (Phase 2)
-            query_with_status = f"""
+            # Query from fraud_predictions table (Phase 2 with status)
+            query = f"""
             SELECT transaction_id, account_id, merchant_id, device_id, 
                    amount, timestamp, fraud_flag, status
-            FROM transactions
+            FROM fraud_predictions
             ORDER BY transaction_id DESC
             LIMIT {limit};
             """
             
-            try:
-                df = pd.read_sql_query(query_with_status, self.connection)
-                logger.info(f"✓ Retrieved {len(df)} transactions from database (with status)")
+            df = pd.read_sql_query(query, self.connection)
+            
+            if len(df) > 0:
+                logger.info(f"✓ Retrieved {len(df)} fraud predictions from database")
                 return df
-            except:
-                # If status column doesn't exist, return Phase 1 data (no status)
-                logger.info("ℹ Status column not yet available (Phase 1 data)")
-                return self.get_transactions_phase1(limit)
+            else:
+                logger.info("ℹ No fraud predictions available yet (Phase 2 not run)")
+                return pd.DataFrame()
                 
         except PostgresError as e:
             logger.warning(f"⚠ Query failed: {e}")
@@ -396,46 +591,38 @@ class PostgreSQLManager:
     
     def get_transaction_by_search(self, search_type: str, search_value: int) -> pd.DataFrame:
         """
-        Get transactions by search criteria (account, merchant, or device) with status from DB
-        Returns gracefully if status column doesn't exist yet (Phase 1)
+        Get predictions by search criteria (account, merchant, or device) from fraud_predictions table
+        Returns empty DataFrame if no matching predictions found (Phase 2 not run yet)
         
         Args:
             search_type: 'account_id', 'merchant_id', or 'device_id'
             search_value: The ID value to search for
         
         Returns:
-            DataFrame with matching transactions (including status if available)
+            DataFrame with matching predictions from fraud_predictions table (includes status)
         """
         try:
             if search_type not in ['account_id', 'merchant_id', 'device_id']:
                 logger.error(f"✗ Invalid search type: {search_type}")
                 return pd.DataFrame()
             
-            # Try with status first
-            query_with_status = f"""
+            # Query from fraud_predictions table (Phase 2 with status)
+            query = f"""
             SELECT transaction_id, account_id, merchant_id, device_id, 
                    amount, timestamp, fraud_flag, status
-            FROM transactions
+            FROM fraud_predictions
             WHERE {search_type} = %s
             ORDER BY timestamp DESC;
             """
             
-            try:
-                df = pd.read_sql_query(query_with_status, self.connection, params=(search_value,))
-                logger.info(f"✓ Retrieved {len(df)} transactions for {search_type}={search_value}")
+            df = pd.read_sql_query(query, self.connection, params=(search_value,))
+            
+            if len(df) > 0:
+                logger.info(f"✓ Retrieved {len(df)} predictions for {search_type}={search_value}")
                 return df
-            except:
-                # If status doesn't exist (Phase 1), query without status
-                query_no_status = f"""
-                SELECT transaction_id, account_id, merchant_id, device_id, 
-                       amount, timestamp, fraud_flag
-                FROM transactions
-                WHERE {search_type} = %s
-                ORDER BY timestamp DESC;
-                """
-                df = pd.read_sql_query(query_no_status, self.connection, params=(search_value,))
-                logger.info(f"✓ Retrieved {len(df)} Phase 1 transactions for {search_type}={search_value}")
-                return df
+            else:
+                logger.info(f"ℹ No predictions found for {search_type}={search_value}")
+                return pd.DataFrame()
                 
         except PostgresError as e:
             logger.warning(f"⚠ Search query failed: {e}")

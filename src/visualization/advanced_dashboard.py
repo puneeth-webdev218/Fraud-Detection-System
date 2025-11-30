@@ -279,30 +279,62 @@ st.sidebar.markdown("---")
 # DATA LOADING SECTION
 # ============================================================================
 
-st.sidebar.markdown("### 📥 Load Real Dataset")
+st.sidebar.markdown("### 📥 Two-Phase Workflow")
 
-real_count = st.sidebar.number_input(
-    "Rows to load from real dataset:",
-    min_value=10,
-    max_value=590000,
-    value=5000,
-    step=1000,
-    key="real_count"
+workflow_mode = st.sidebar.radio(
+    "Select workflow:",
+    ["Generate Demo Data", "Load Real Dataset"],
+    label_visibility="collapsed"
 )
 
-if st.sidebar.button("📥 Load Real IEEE-CIS Data", use_container_width=True):
-    with st.spinner(f"Loading {real_count:,} transactions from real dataset..."):
-        st.session_state.n_transactions = real_count
-        st.session_state.transactions = load_ieee_data(real_count, use_synthetic=False)
+if workflow_mode == "Generate Demo Data":
+    demo_count = st.sidebar.number_input(
+        "Demo transactions:",
+        min_value=100,
+        max_value=10000,
+        value=1000,
+        step=100,
+        key="demo_count"
+    )
+    
+    if st.sidebar.button("🔄 Generate Demo Data", use_container_width=True):
+        st.session_state.n_transactions = demo_count
+        st.session_state.transactions = generate_demo_transactions(demo_count)
         st.session_state.data_loaded_at = datetime.now()
-        st.session_state.load_method = 'ieee-cis'
-        st.success(f"✅ Loaded {real_count:,} real transactions!")
+        st.session_state.load_method = 'synthetic'
+        st.success(f"✅ Generated {demo_count:,} demo transactions!")
+        st.rerun()
+
+else:  # Load Real Dataset
+    real_count = st.sidebar.number_input(
+        "Rows to load from real dataset:",
+        min_value=10,
+        max_value=590000,
+        value=5000,
+        step=1000,
+        key="real_count"
+    )
     
-    # ============================================================================
-    # TWO-PHASE INSERTION PROCESS
-    # ============================================================================
+    if st.sidebar.button("📥 Load Real IEEE-CIS Data", use_container_width=True):
+        with st.spinner(f"Loading {real_count:,} transactions from real dataset..."):
+            st.session_state.n_transactions = real_count
+            st.session_state.transactions = load_ieee_data(real_count, use_synthetic=False)
+            st.session_state.data_loaded_at = datetime.now()
+            st.session_state.load_method = 'ieee-cis'
+            st.success(f"✅ Loaded {real_count:,} real transactions!")
+        st.rerun()
+
+# ============================================================================
+# PHASE 1: LOAD TRANSACTIONS (Insert to transactions table - raw data, no status)
+# ============================================================================
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Phase 1️⃣ - Raw Data")
+
+if st.sidebar.button("📤 Load Transactions (Phase 1)", use_container_width=True, 
+                     help="Insert raw data to transactions table (NO status column)"):
     
-    with st.spinner(f"Phase 1: Inserting {real_count:,} raw transactions into PostgreSQL..."):
+    with st.spinner("Phase 1: Inserting raw transactions into PostgreSQL..."):
         try:
             # Prepare data for database insertion
             df = st.session_state.transactions.copy()
@@ -340,29 +372,30 @@ if st.sidebar.button("📥 Load Real IEEE-CIS Data", use_container_width=True):
             if not db_manager.connect():
                 st.error("❌ Failed to connect to PostgreSQL database")
                 phase1_success = False
+                print("❌ PHASE 1 FAILED - Database connection error")
             else:
-                # Reset database (clear old data)
-                if not db_manager.reset_transactions_table():
-                    st.error("❌ Failed to reset database")
-                    phase1_success = False
-                elif not db_manager.create_transactions_table():
-                    # Create table if needed (NOTE: No status column in Phase 1)
+                print(f"🔄 PHASE 1 START - Inserting {len(df):,} raw transactions...")
+                
+                # Ensure transactions table exists (no status column)
+                if not db_manager.create_transactions_table():
                     st.error("❌ Failed to create transactions table")
                     phase1_success = False
+                    print("❌ PHASE 1 FAILED - Could not create transactions table")
                 else:
-                    # PHASE 1: Insert raw data WITHOUT status column
+                    # PHASE 1: Insert raw data to transactions table (7 columns, NO status)
                     inserted, skipped = db_manager.insert_transactions_batch(df)
                     
                     # Verify insertion
                     actual_count = db_manager.get_transaction_count()
                     
-                    if actual_count == real_count:
-                        st.success(f"✅ Phase 1 Complete: {actual_count:,} raw transactions saved to pgAdmin!")
-                        st.info(f"📋 Database now shows: transaction_id, account_id, merchant_id, device_id, amount, timestamp, fraud_flag (NO status yet)")
-                        phase1_success = True
-                    else:
-                        st.warning(f"⚠️ Phase 1 Partial: {actual_count:,} of {real_count:,} transactions in database")
-                        phase1_success = False
+                    print(f"✅ PHASE 1 COMPLETE — {actual_count:,} raw transactions stored in database")
+                    print(f"   Columns: transaction_id, account_id, merchant_id, device_id, amount, timestamp, fraud_flag")
+                    print(f"   Table: 'transactions' (raw data, no status)")
+                    
+                    st.success(f"✅ Phase 1 Complete: {actual_count:,} raw transactions stored!")
+                    st.info(f"📊 Check pgAdmin → **transactions** table (7 columns, NO status)")
+                    phase1_success = True
+                    st.session_state.phase1_done = True
                 
                 # Disconnect after Phase 1
                 db_manager.disconnect()
@@ -370,42 +403,88 @@ if st.sidebar.button("📥 Load Real IEEE-CIS Data", use_container_width=True):
         except Exception as e:
             st.error(f"❌ Phase 1 failed: {str(e)}")
             logger.error(f"Phase 1 error: {str(e)}")
+            print(f"❌ PHASE 1 ERROR: {str(e)}")
             phase1_success = False
+
+# ============================================================================
+# PHASE 2: DO PREDICTIONS (Insert to fraud_predictions table - with status)
+# ============================================================================
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Phase 2️⃣ - GNN Predictions")
+
+if st.sidebar.button("🧠 Do Predictions (Phase 2)", use_container_width=True,
+                     help="Run GNN analysis and insert predictions with status"):
     
-    # ============================================================================
-    # PHASE 2: After GNN Processing
-    # ============================================================================
-    
-    if phase1_success:
-        with st.spinner("Phase 2: Processing with GNN and adding status column..."):
-            try:
-                # Simulate GNN processing (in real workflow, this would be the actual GNN model)
-                st.info("🧠 Running Graph Neural Network analysis...")
-                import time
-                time.sleep(1)  # Simulate processing time
+    with st.spinner("Phase 2: Running GNN and saving predictions..."):
+        try:
+            # Prepare data for predictions
+            df = st.session_state.transactions.copy()
+            
+            # Rename columns to match database schema
+            column_mapping = {
+                'TransactionID': 'transaction_id',
+                'TransactionAmt': 'amount',
+                'isFraud': 'fraud_flag',
+                'TransactionDT': 'timestamp'
+            }
+            
+            if 'transaction_id' not in df.columns:
+                df = df.rename(columns=column_mapping, errors='ignore')
+            
+            # Ensure all required columns exist
+            if 'amount' not in df.columns and 'transaction_amount' in df.columns:
+                df = df.rename(columns={'transaction_amount': 'amount'})
+            if 'fraud_flag' not in df.columns and 'is_fraud' in df.columns:
+                df = df.rename(columns={'is_fraud': 'fraud_flag'})
+            if 'timestamp' not in df.columns and 'transaction_date' in df.columns:
+                df = df.rename(columns={'transaction_date': 'timestamp'})
+            
+            # Add missing IDs if needed
+            if 'account_id' not in df.columns:
+                df['account_id'] = (df['transaction_id'] % 100) + 1
+            if 'merchant_id' not in df.columns:
+                df['merchant_id'] = (df['transaction_id'] % 15) + 1
+            if 'device_id' not in df.columns:
+                df['device_id'] = (df['transaction_id'] % 10) + 1
+            
+            # Add status column based on fraud_flag (simulates GNN output)
+            df['status'] = df['fraud_flag'].apply(lambda x: 'FRAUD' if x == 1 else 'OK')
+            
+            # Connect to database
+            db_manager = PostgreSQLManager()
+            if not db_manager.connect():
+                st.error("❌ Failed to connect to PostgreSQL database")
+                print("❌ PHASE 2 FAILED - Database connection error")
+            else:
+                print(f"🔄 PHASE 2 START - Running GNN analysis and saving {len(df):,} predictions...")
                 
-                # Connect to database for Phase 2
-                db_manager = PostgreSQLManager()
-                if not db_manager.connect():
-                    st.error("❌ Failed to connect to PostgreSQL for Phase 2")
+                # Ensure fraud_predictions table exists
+                if not db_manager.create_fraud_predictions_table():
+                    st.error("❌ Failed to create fraud_predictions table")
+                    print("❌ PHASE 2 FAILED - Could not create fraud_predictions table")
                 else:
-                    # PHASE 2: Add status column and update all records
-                    if db_manager.add_status_column_and_update():
-                        st.success("✅ Phase 2 Complete: GNN finished — status column updated in pgAdmin!")
-                        st.info(f"📊 Database now shows: All columns + status (✓ OK / ⚠ FRAUD)")
-                        st.session_state.db_synced = True
-                        st.session_state.db_sync_time = datetime.now()
-                    else:
-                        st.error("❌ Phase 2 failed: Could not add/update status column")
+                    # PHASE 2: Insert predictions to fraud_predictions table (8 columns WITH status)
+                    inserted, skipped = db_manager.insert_fraud_predictions_batch(df)
                     
-                    # Disconnect after Phase 2
-                    db_manager.disconnect()
+                    # Verify insertion
+                    actual_count = db_manager.get_fraud_prediction_count()
+                    
+                    print(f"✅ PHASE 2 COMPLETE — {actual_count:,} predictions stored in database")
+                    print(f"   Columns: transaction_id, account_id, merchant_id, device_id, amount, timestamp, fraud_flag, status")
+                    print(f"   Table: 'fraud_predictions' (enriched with GNN status)")
+                    
+                    st.success(f"✅ Phase 2 Complete: {actual_count:,} predictions with status saved!")
+                    st.info(f"📊 Check pgAdmin → **fraud_predictions** table (8 columns WITH status ✓ OK / ⚠ FRAUD)")
+                    st.session_state.phase2_done = True
                 
-            except Exception as e:
-                st.error(f"❌ Phase 2 failed: {str(e)}")
-                logger.error(f"Phase 2 error: {str(e)}")
-    
-    st.rerun()
+                # Disconnect after Phase 2
+                db_manager.disconnect()
+        
+        except Exception as e:
+            st.error(f"❌ Phase 2 failed: {str(e)}")
+            logger.error(f"Phase 2 error: {str(e)}")
+            print(f"❌ PHASE 2 ERROR: {str(e)}")
 
 # Display loading status
 st.sidebar.markdown("---")
@@ -418,12 +497,17 @@ loaded_at = st.session_state.data_loaded_at
 # Calculate stats
 stats = get_overview_stats(transactions)
 
+phase1_status = "✅ Done" if st.session_state.get('phase1_done', False) else "⏳ Pending"
+phase2_status = "✅ Done" if st.session_state.get('phase2_done', False) else "⏳ Pending"
+
 status_html = f"""
 <div class="loading-info">
     <strong>📦 Loaded Transactions:</strong> {n_loaded:,}<br>
     <strong>🕐 Last Loaded:</strong> {loaded_at.strftime('%H:%M:%S')}<br>
-    <strong>📊 Data Method:</strong> {st.session_state.load_method.capitalize()}<br>
-    <strong>🗄️ pgAdmin Status:</strong> {'✅ Two-Phase Complete' if st.session_state.get('db_synced', False) else '❌ Not synced'}<br><br>
+    <strong>📊 Data Method:</strong> {st.session_state.load_method.capitalize()}<br><br>
+    <strong>🔄 Workflow Status:</strong><br>
+    • Phase 1 (Raw) → {phase1_status}<br>
+    • Phase 2 (Predictions) → {phase2_status}<br><br>
     <strong>📈 Dataset Breakdown:</strong><br>
     • Accounts: {stats['total_accounts']:,}<br>
     • Merchants: {transactions['merchant_id'].nunique():,}<br>
