@@ -1,155 +1,194 @@
-# 🔍 Graph Neural Network–Based Fraud Detection System
+# 🔍 Fraud Detection System - Graph Neural Networks
 
 ## Project Overview
 A comprehensive fraud detection system that combines database-driven transaction analysis with Graph Neural Networks (GNN) to identify fraudulent financial transactions by analyzing relationships between accounts, devices, and merchants.
 
 ## 🎯 Key Features
-- **Database-Driven Architecture**: PostgreSQL-based storage for structured transaction data
-- **Graph Neural Networks**: Advanced GNN models (GraphSAGE/GAT/R-GCN) for relational fraud detection
-- **Real-time Analysis**: Fraud risk scoring and pattern detection
-- **Interactive Dashboard**: Streamlit-based visualization and analytics
-- **IEEE-CIS Dataset**: Using real-world anonymized transaction data
+- **Interactive Dashboard**: Real-time fraud monitoring with Streamlit
+- **Dynamic Data Loading**: Load N transactions at runtime without code changes
+- **Real IEEE-CIS Dataset**: Support for real-world fraud detection data
+- **Graph Neural Networks**: Advanced GNN models (GraphSAGE/GAT/R-GCN)
+- **Multi-Page Analytics**: 7 specialized analysis dashboards
+- **Automatic Fallback**: Seamless transition to synthetic data if real data unavailable
 
 ## 📊 Dataset
 **IEEE-CIS Fraud Detection Dataset**
-- Anonymized online transaction data
-- User identity and device metadata
-- Transaction amounts, card details, timestamps
-- Fraud labels for supervised learning
+- 590,540 anonymized transactions
+- 144,233 identity records
+- User accounts, merchants, devices, and fraud labels
+- Real-world fraud patterns and relationships
 
 ## 🏗️ Project Structure
 ```
-FRAUD/
-├── data/                      # Raw and processed datasets
-│   ├── raw/                   # Original IEEE-CIS data
-│   └── processed/             # Cleaned and transformed data
-├── database/                  # Database related files
-│   ├── schema/                # SQL schema definitions
-│   ├── migrations/            # Database migration scripts
-│   └── queries/               # Common SQL queries
-├── src/                       # Source code
-│   ├── config/                # Configuration files
-│   ├── database/              # Database connection & utilities
-│   ├── preprocessing/         # Data cleaning & transformation
-│   ├── graph/                 # Graph construction modules
-│   ├── models/                # GNN model architectures
-│   ├── training/              # Training & evaluation pipelines
-│   └── visualization/         # Dashboard & plotting utilities
-├── notebooks/                 # Jupyter notebooks for exploration
-├── tests/                     # Unit and integration tests
-├── docs/                      # Documentation
-│   ├── ER_diagram.md          # Entity-Relationship diagram
-│   └── graph_schema.md        # Graph structure documentation
-├── checkpoints/               # Model checkpoints
-├── logs/                      # Training and system logs
-├── requirements.txt           # Python dependencies
-├── .env.example              # Environment variables template
-└── README.md                  # This file
+DRAGNN-FraudDB/
+├── data/                          # Dataset storage
+│   ├── raw/                       # IEEE-CIS CSV files
+│   └── processed/                 # Processed data
+├── src/
+│   ├── config/                    # Configuration
+│   ├── database/                  # Database utilities
+│   ├── preprocessing/
+│   │   ├── interactive_loader.py  # Dynamic data loading ⭐ NEW
+│   │   └── data_loader.py
+│   ├── graph/                     # Graph construction
+│   ├── models/                    # GNN models
+│   ├── training/                  # Training pipelines
+│   └── visualization/
+│       ├── advanced_dashboard.py  # Main dashboard ⭐ NEW
+│       └── simple_dashboard.py
+├── docs/                          # Documentation
+├── DATASET_SETUP.md              # Dataset configuration guide ⭐ NEW
+├── START_HERE.md                 # Quick start guide ⭐ NEW
+├── DYNAMIC_LOADING_FEATURE.md    # Feature documentation ⭐ NEW
+└── requirements.txt
 ```
 
-## 🗄️ Database Schema
+## 🎯 Quick Start
 
-### Core Tables
-- **ACCOUNT**: User account metadata and risk profiles
-- **MERCHANT**: Merchant information and categories
-- **DEVICE**: Device records and metadata
-- **TRANSACTION**: Transaction records with fraud labels
-- **SHARED_DEVICE**: Device-sharing patterns between accounts
+### Option 1: Using Real Dataset
+1. Download from: https://www.kaggle.com/c/ieee-fraud-detection/data
+2. Extract `train_transaction.csv` and `train_identity.csv` to `data/raw/`
+3. Run dashboard:
+   ```bash
+   streamlit run src/visualization/advanced_dashboard.py
+   ```
+4. Click "Load Real IEEE-CIS Data" and select transaction count
+
+### Option 2: Using Demo
+```bash
+python run_demo.py
+```
+
+## 📈 Dashboard Features
+
+### 📊 Dashboard Overview
+- Real-time metrics (total transactions, fraud rate)
+- Fraud distribution pie chart
+- Transaction amount statistics
+
+### ⚠️ High-Risk Accounts
+- Risk scoring algorithm
+- Top fraudulent accounts
+- Transaction patterns
+
+### 📈 Fraud Trends
+- Daily fraud rates
+- Temporal patterns
+- Trend visualization
+
+### 🏪 Merchant Analysis
+- Merchant fraud statistics
+- High-risk merchants
+- Transaction volumes
+
+### 🖥️ Device Intelligence
+- Device sharing patterns
+- Multi-account detection
+- Device-based fraud insights
+
+### 🔎 Transaction Search
+- Filter by account, merchant, device
+- Detailed transaction lookup
+- Fraud probability scoring
+
+### ⚙️ Settings & Help
+- Feature documentation
+- System information
+- Configuration options
+
+## 💻 Dynamic Transaction Loading
+
+**Load any number of transactions at runtime without code changes!**
+
+```bash
+streamlit run src/visualization/advanced_dashboard.py
+```
+
+In the sidebar:
+- Enter desired row count (10-590,000)
+- Click "Load Real IEEE-CIS Data"
+- All pages instantly update
+
+**Example:**
+- Load 1,000 rows: ~2 seconds
+- Load 10,000 rows: ~5 seconds
+- Load 50,000 rows: ~20 seconds
 
 ## 🔧 Technology Stack
 | Component | Technology |
 |-----------|-----------|
-| Database | PostgreSQL |
-| ML Framework | PyTorch, PyTorch Geometric |
-| Graph Processing | NetworkX, DGL |
-| Visualization | Streamlit, Plotly, Matplotlib |
-| Data Processing | Pandas, NumPy |
-| Environment | Python 3.9+ |
-
-## 📋 Prerequisites
-- Python 3.9 or higher
-- PostgreSQL 13 or higher
-- 8GB+ RAM recommended
-- GPU (optional but recommended for training)
-
-## 🚀 Quick Start
-
-### 1. Clone and Setup Environment
-```bash
-cd FRAUD
-python -m venv venv
-.\venv\Scripts\Activate.ps1  # Windows PowerShell
-pip install -r requirements.txt
-```
-
-### 2. Configure Database
-```bash
-# Copy environment template
-cp .env.example .env
-
-# Edit .env with your PostgreSQL credentials
-# Then create database
-python src/database/setup_db.py
-```
-
-### 3. Load Data
-```bash
-# Download IEEE-CIS dataset (place in data/raw/)
-# Then run preprocessing
-python src/preprocessing/load_data.py
-```
-
-### 4. Build Graph
-```bash
-python src/graph/build_graph.py
-```
-
-### 5. Train Model
-```bash
-python src/training/train.py --config src/config/train_config.yaml
-```
-
-### 6. Launch Dashboard
-```bash
-streamlit run src/visualization/dashboard.py
-```
-
-## 📈 Evaluation Metrics
-- **Precision**: Accuracy of fraud predictions
-- **Recall**: Coverage of actual fraud cases
-- **F1-Score**: Harmonic mean of precision and recall
-- **ROC-AUC**: Area under ROC curve
-- **Comparison**: Baseline vs GNN performance
-
-## 🎯 Expected Outcomes
-1. ✅ Functional PostgreSQL database with fraud transaction records
-2. ✅ GNN-based fraud classification model
-3. ✅ Interactive dashboard with:
-   - Fraud cluster visualization
-   - Risk score trends
-   - Network relationship maps
-   - Real-time transaction monitoring
+| Framework | Streamlit, PyTorch |
+| Graph Processing | PyTorch Geometric, NetworkX |
+| Data | Pandas, NumPy |
+| Visualization | Plotly, Matplotlib |
+| Database | PostgreSQL (optional) |
 
 ## 📚 Documentation
-- [Database Schema](docs/ER_diagram.md)
-- [Graph Structure](docs/graph_schema.md)
-- [Model Architecture](docs/model_architecture.md)
-- [API Reference](docs/api_reference.md)
+- [START_HERE.md](START_HERE.md) - Entry point for new users
+- [DATASET_SETUP.md](DATASET_SETUP.md) - Dataset configuration
+- [DYNAMIC_LOADING_FEATURE.md](DYNAMIC_LOADING_FEATURE.md) - Feature details
+- [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md) - Integration examples
+- [QUICK_START_DYNAMIC_LOADING.md](QUICK_START_DYNAMIC_LOADING.md) - Quick reference
+
+## 🚀 Usage Examples
+
+### Python Integration
+```python
+from src.preprocessing.interactive_loader import InteractiveDataLoader
+
+loader = InteractiveDataLoader()
+
+# Load 5,000 real transactions
+transactions, identity = loader.load_ieee_cis_data(n_transactions=5000)
+
+# Load 1,000 synthetic (demo)
+demo_data = loader.generate_synthetic_transactions(1000)
+```
+
+### Dashboard
+```bash
+# Start dashboard
+streamlit run src/visualization/advanced_dashboard.py
+
+# Then in UI:
+# 1. Set row count in sidebar
+# 2. Click "Load Real IEEE-CIS Data"
+# 3. Explore 7 analysis pages
+```
+
+## ✨ Recent Enhancements
+✅ Dynamic transaction loading feature  
+✅ Real IEEE-CIS dataset support  
+✅ Column standardization for real data  
+✅ 7-page interactive dashboard  
+✅ Automatic synthetic fallback  
+✅ Comprehensive documentation  
+
+## 📊 Project Status
+- **Dashboard**: ✅ Fully functional
+- **Real Data Loading**: ✅ Working
+- **Dynamic Features**: ✅ Implemented
+- **GNN Models**: 🚧 In development
+- **Database Integration**: 🚧 In development
 
 ## 🤝 Contributing
-This is an academic/research project. For modifications or improvements, please document your changes thoroughly.
+This is an academic/research project. For improvements, please:
+1. Document changes thoroughly
+2. Test with both synthetic and real data
+3. Update relevant documentation
 
 ## 📝 License
 MIT License - See LICENSE file for details
 
-## 👥 Authors
-- Project for fraud detection research using GNNs
+## 👥 Authors & Contact
+Puneeth Nagaraj
+- GitHub: https://github.com/puneeth-webdev218
 
 ## 🔗 References
 - IEEE-CIS Fraud Detection Dataset (Kaggle)
 - PyTorch Geometric Documentation
-- Graph Neural Networks for Fraud Detection (Research Papers)
+- Streamlit Documentation
 
 ---
-**Status**: 🚧 Under Active Development
-**Last Updated**: November 20, 2025
+**Last Updated**: November 30, 2025  
+**Status**: 🚀 Production Ready (Dashboard & Data Loading)
