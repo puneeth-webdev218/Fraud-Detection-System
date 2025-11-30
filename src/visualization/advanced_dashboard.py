@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from src.preprocessing.interactive_loader import InteractiveDataLoader, generate_demo_transactions
+from src.database.dynamic_postgres_manager import PostgreSQLManager
 import logging
 
 logger = logging.getLogger(__name__)
@@ -296,6 +297,74 @@ if st.sidebar.button("📥 Load Real IEEE-CIS Data", use_container_width=True):
         st.session_state.data_loaded_at = datetime.now()
         st.session_state.load_method = 'ieee-cis'
         st.success(f"✅ Loaded {real_count:,} real transactions!")
+    
+    # Insert loaded transactions into PostgreSQL
+    with st.spinner(f"Updating PostgreSQL database with {real_count:,} transactions..."):
+        try:
+            # Prepare data for database insertion
+            df = st.session_state.transactions.copy()
+            
+            # Rename columns to match database schema
+            column_mapping = {
+                'TransactionID': 'transaction_id',
+                'TransactionAmt': 'amount',
+                'isFraud': 'fraud_flag',
+                'TransactionDT': 'timestamp'
+            }
+            
+            # For synthetic data, ensure proper column names
+            if 'transaction_id' not in df.columns:
+                df = df.rename(columns=column_mapping, errors='ignore')
+            
+            # Ensure all required columns exist
+            if 'amount' not in df.columns and 'transaction_amount' in df.columns:
+                df = df.rename(columns={'transaction_amount': 'amount'})
+            if 'fraud_flag' not in df.columns and 'is_fraud' in df.columns:
+                df = df.rename(columns={'is_fraud': 'fraud_flag'})
+            if 'timestamp' not in df.columns and 'transaction_date' in df.columns:
+                df = df.rename(columns={'transaction_date': 'timestamp'})
+            
+            # Add missing IDs if needed
+            if 'account_id' not in df.columns:
+                df['account_id'] = (df['transaction_id'] % 100) + 1
+            if 'merchant_id' not in df.columns:
+                df['merchant_id'] = (df['transaction_id'] % 15) + 1
+            if 'device_id' not in df.columns:
+                df['device_id'] = (df['transaction_id'] % 10) + 1
+            
+            # Connect to database
+            db_manager = PostgreSQLManager()
+            if not db_manager.connect():
+                st.error("❌ Failed to connect to PostgreSQL database")
+            else:
+                # Reset database (clear old data)
+                if not db_manager.reset_transactions_table():
+                    st.error("❌ Failed to reset database")
+                else:
+                    # Create table if needed
+                    if not db_manager.create_transactions_table():
+                        st.error("❌ Failed to create transactions table")
+                    else:
+                        # Insert data
+                        inserted, skipped = db_manager.insert_transactions_batch(df)
+                        
+                        # Verify insertion
+                        actual_count = db_manager.get_transaction_count()
+                        
+                        if actual_count == real_count:
+                            st.success(f"✅ PostgreSQL Updated: {actual_count:,} transactions synced to pgAdmin!")
+                            st.session_state.db_synced = True
+                            st.session_state.db_sync_time = datetime.now()
+                        else:
+                            st.warning(f"⚠️ Partial sync: {actual_count:,} of {real_count:,} transactions in database")
+                
+                # Disconnect
+                db_manager.disconnect()
+        
+        except Exception as e:
+            st.error(f"❌ Database sync failed: {str(e)}")
+            logger.error(f"Database sync error: {str(e)}")
+    
     st.rerun()
 
 # Display loading status
@@ -313,7 +382,8 @@ status_html = f"""
 <div class="loading-info">
     <strong>📦 Loaded Transactions:</strong> {n_loaded:,}<br>
     <strong>🕐 Last Loaded:</strong> {loaded_at.strftime('%H:%M:%S')}<br>
-    <strong>📊 Data Method:</strong> {st.session_state.load_method.capitalize()}<br><br>
+    <strong>📊 Data Method:</strong> {st.session_state.load_method.capitalize()}<br>
+    <strong>🗄️ pgAdmin Status:</strong> {'✅ Synced' if st.session_state.get('db_synced', False) else '❌ Not synced'}<br><br>
     <strong>📈 Dataset Breakdown:</strong><br>
     • Accounts: {stats['total_accounts']:,}<br>
     • Merchants: {transactions['merchant_id'].nunique():,}<br>
