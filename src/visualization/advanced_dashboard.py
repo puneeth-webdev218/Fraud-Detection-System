@@ -213,6 +213,8 @@ if 'n_transactions' not in st.session_state:
     st.session_state.transactions = generate_demo_transactions(1000)
     st.session_state.data_loaded_at = datetime.now()
     st.session_state.load_method = 'synthetic'
+    st.session_state.phase1_done = False
+    st.session_state.phase2_done = False
 
 
 @st.cache_resource
@@ -279,63 +281,32 @@ st.sidebar.markdown("---")
 # DATA LOADING SECTION
 # ============================================================================
 
-st.sidebar.markdown("### 📥 Two-Phase Workflow")
+st.sidebar.markdown("### Phase 1️⃣ - Load Transactions")
 
-workflow_mode = st.sidebar.radio(
-    "Select workflow:",
-    ["Generate Demo Data", "Load Real Dataset"],
-    label_visibility="collapsed"
+phase1_count = st.sidebar.number_input(
+    "Enter number of transactions to load:",
+    min_value=10,
+    max_value=590000,
+    value=5000,
+    step=1000,
+    key="phase1_count"
 )
 
-if workflow_mode == "Generate Demo Data":
-    demo_count = st.sidebar.number_input(
-        "Demo transactions:",
-        min_value=100,
-        max_value=10000,
-        value=1000,
-        step=100,
-        key="demo_count"
-    )
+if st.sidebar.button("📤 Load Transactions (Phase 1)", use_container_width=True, 
+                     help="Load real IEEE-CIS data and insert to transactions table"):
     
-    if st.sidebar.button("🔄 Generate Demo Data", use_container_width=True):
-        st.session_state.n_transactions = demo_count
-        st.session_state.transactions = generate_demo_transactions(demo_count)
-        st.session_state.data_loaded_at = datetime.now()
-        st.session_state.load_method = 'synthetic'
-        st.success(f"✅ Generated {demo_count:,} demo transactions!")
-        st.rerun()
-
-else:  # Load Real Dataset
-    real_count = st.sidebar.number_input(
-        "Rows to load from real dataset:",
-        min_value=10,
-        max_value=590000,
-        value=5000,
-        step=1000,
-        key="real_count"
-    )
+    # Reset phase2_done flag - new Phase 1 load means Phase 2 needs to be rerun
+    st.session_state.phase2_done = False
     
-    if st.sidebar.button("📥 Load Real IEEE-CIS Data", use_container_width=True):
-        with st.spinner(f"Loading {real_count:,} transactions from real dataset..."):
-            st.session_state.n_transactions = real_count
-            st.session_state.transactions = load_ieee_data(real_count, use_synthetic=False)
+    with st.spinner(f"Phase 1: Loading {phase1_count:,} transactions and inserting to PostgreSQL..."):
+        try:
+            # First, load real IEEE-CIS data
+            print(f"🔄 PHASE 1 START - Loading {phase1_count:,} real IEEE-CIS transactions...")
+            st.session_state.n_transactions = phase1_count
+            st.session_state.transactions = load_ieee_data(phase1_count, use_synthetic=False)
             st.session_state.data_loaded_at = datetime.now()
             st.session_state.load_method = 'ieee-cis'
-            st.success(f"✅ Loaded {real_count:,} real transactions!")
-        st.rerun()
-
-# ============================================================================
-# PHASE 1: LOAD TRANSACTIONS (Insert to transactions table - raw data, no status)
-# ============================================================================
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### Phase 1️⃣ - Raw Data")
-
-if st.sidebar.button("📤 Load Transactions (Phase 1)", use_container_width=True, 
-                     help="Insert raw data to transactions table (NO status column)"):
-    
-    with st.spinner("Phase 1: Inserting raw transactions into PostgreSQL..."):
-        try:
+            
             # Prepare data for database insertion
             df = st.session_state.transactions.copy()
             
@@ -563,84 +534,101 @@ st.sidebar.markdown(f"**Dashboard Updated:** {datetime.now().strftime('%H:%M:%S'
 if page == "📊 Dashboard Overview":
     st.markdown('<div class="section-header">📊 System Overview</div>', unsafe_allow_html=True)
     
-    st.info(f"📥 **Showing analysis for {n_loaded:,} loaded transactions**")
+    st.info(f"📥 **Total Transactions Loaded: {n_loaded:,}**")
     
-    # Key metrics in columns
-    col1, col2, col3, col4 = st.columns(4)
+    # Before Phase 2: Only show total transactions count
+    if not st.session_state.get('phase2_done', False):
+        col1 = st.columns(1)[0]
+        
+        with col1:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Total Transactions Loaded (Phase 1)</div>
+                <div class="metric-value">{stats['total_transactions']:,}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("---")
+        st.info("⏳ **Click 'Do Predictions (Phase 2)' to process data with GNN and view detailed analytics and charts.**")
     
-    with col1:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Total Transactions</div>
-            <div class="metric-value">{stats['total_transactions']:,}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown(f"""
-        <div class="metric-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
-            <div class="metric-label">Fraud Cases</div>
-            <div class="metric-value">{stats['fraud_transactions']:,}</div>
-            <div class="metric-label">{stats['fraud_rate']:.2f}% Rate</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown(f"""
-        <div class="metric-card" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
-            <div class="metric-label">Total Accounts</div>
-            <div class="metric-value">{stats['total_accounts']:,}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col4:
-        st.markdown(f"""
-        <div class="metric-card" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);">
-            <div class="metric-label">Total Amount</div>
-            <div class="metric-value">${stats['total_amount']/1000:.1f}K</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    # Charts
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Transaction Distribution")
-        fraud_dist = pd.DataFrame({
-            'Type': ['Legitimate', 'Fraudulent'],
-            'Count': [
-                stats['total_transactions'] - stats['fraud_transactions'],
-                stats['fraud_transactions']
-            ]
-        })
-        fig = px.pie(fraud_dist, values='Count', names='Type',
-                    color_discrete_sequence=['#2ecc71', '#e74c3c'],
-                    hole=0.4)
-        fig.update_traces(textposition='inside', textinfo='percent+label')
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        st.subheader("Transaction Amount Distribution")
-        fig = px.histogram(transactions, x='transaction_amount',
-                          nbins=50, color='is_fraud',
-                          color_discrete_map={True: '#e74c3c', False: '#2ecc71'},
-                          labels={'is_fraud': 'Fraudulent'})
-        fig.update_layout(height=350)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Recent transactions
-    st.markdown("---")
-    st.subheader("Recent Transactions (Latest 10)")
-    recent = transactions.nlargest(10, 'transaction_date')[
-        ['transaction_id', 'account_id', 'merchant_id', 'transaction_amount', 'is_fraud']
-    ].copy()
-    recent['Status'] = recent['is_fraud'].apply(lambda x: '⚠️ FRAUD' if x else '✓ OK')
-    st.dataframe(
-        recent[['transaction_id', 'account_id', 'merchant_id', 'transaction_amount', 'Status']],
-        use_container_width=True
-    )
+    # After Phase 2: Show full analytics
+    else:
+        # Key metrics in columns
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Total Transactions</div>
+                <div class="metric-value">{stats['total_transactions']:,}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown(f"""
+            <div class="metric-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                <div class="metric-label">Fraud Cases</div>
+                <div class="metric-value">{stats['fraud_transactions']:,}</div>
+                <div class="metric-label">{stats['fraud_rate']:.2f}% Rate</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col3:
+            st.markdown(f"""
+            <div class="metric-card" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+                <div class="metric-label">Total Accounts</div>
+                <div class="metric-value">{stats['total_accounts']:,}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col4:
+            st.markdown(f"""
+            <div class="metric-card" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);">
+                <div class="metric-label">Total Amount</div>
+                <div class="metric-value">${stats['total_amount']/1000:.1f}K</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("---")
+        
+        # Charts (only show after Phase 2 predictions are done)
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Transaction Distribution")
+            fraud_dist = pd.DataFrame({
+                'Type': ['Legitimate', 'Fraudulent'],
+                'Count': [
+                    stats['total_transactions'] - stats['fraud_transactions'],
+                    stats['fraud_transactions']
+                ]
+            })
+            fig = px.pie(fraud_dist, values='Count', names='Type',
+                        color_discrete_sequence=['#2ecc71', '#e74c3c'],
+                        hole=0.4)
+            fig.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            st.subheader("Transaction Amount Distribution")
+            fig = px.histogram(transactions, x='transaction_amount',
+                              nbins=50, color='is_fraud',
+                              color_discrete_map={True: '#e74c3c', False: '#2ecc71'},
+                              labels={'is_fraud': 'Fraudulent'})
+            fig.update_layout(height=350)
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Recent transactions
+        st.markdown("---")
+        st.subheader("Recent Transactions (Latest 10)")
+        recent = transactions.nlargest(10, 'transaction_date')[
+            ['transaction_id', 'account_id', 'merchant_id', 'transaction_amount', 'is_fraud']
+        ].copy()
+        recent['Status'] = recent['is_fraud'].apply(lambda x: '⚠️ FRAUD' if x else '✓ OK')
+        st.dataframe(
+            recent[['transaction_id', 'account_id', 'merchant_id', 'transaction_amount', 'Status']],
+            use_container_width=True
+        )
 
 
 elif page == "⚠️ High-Risk Accounts":

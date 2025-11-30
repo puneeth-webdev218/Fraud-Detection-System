@@ -352,7 +352,7 @@ class PostgreSQLManager:
                 batch = records[i:i+batch_size]
                 # Convert fraud_flag (position 6) from int to boolean
                 batch_with_bool = [
-                    (row[0], row[1], row[2], row[3], row[4], row[5], bool(row[6]), row[7])
+                    (row[0], row[1], row[2], row[3], row[4], row[5], bool(row[6]))
                     for row in batch
                 ]
                 try:
